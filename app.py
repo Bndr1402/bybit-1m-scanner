@@ -1,13 +1,13 @@
-import math
-import time
-import urllib.request
 import json
-from flask import Flask, render_template_string, request
+import time
+import urllib.parse
+import urllib.request
+from flask import Flask, jsonify, render_template_string, request
 
 app = Flask(__name__)
 
-BYBIT_KLINE_URL = "https://api.bybit.com/v5/market/kline"
-DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
+BYBIT_KLINE_URL = "https://delicate-butterfly-5800.bjoo10072-998.workers.dev/v5/market/kline"
+DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
 
 HTML_PAGE = """
 <!doctype html>
@@ -15,201 +15,132 @@ HTML_PAGE = """
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="apple-mobile-web-app-capable" content="yes">
   <title>ماسح Bybit 1m</title>
   <style>
-    body { font-family: Tahoma, Arial, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 16px; }
-    .card { background: #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 12px; border: 1px solid #334155; }
-    .top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-    .sym { font-size: 18px; font-weight: bold; }
-    .buy { background: #16a34a; color: #fff; padding: 4px 10px; border-radius: 8px; font-weight: bold; }
-    .sell { background: #dc2626; color: #fff; padding: 4px 10px; border-radius: 8px; font-weight: bold; }
-    .wait { background: #475569; color: #fff; padding: 4px 10px; border-radius: 8px; font-weight: bold; }
-    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-size: 13px; color: #cbd5e1; }
-    .box { background: #0f172a; padding: 8px; border-radius: 8px; text-align: center; }
-    .reason { margin-top: 8px; font-size: 12px; color: #94a3b8; }
-    form { display: flex; gap: 8px; margin-bottom: 14px; }
-    input { flex: 1; padding: 10px; border-radius: 10px; border: 1px solid #475569; background: #1e293b; color: #fff; }
-    button { padding: 10px 16px; border-radius: 10px; border: none; background: #2563eb; color: #fff; font-weight: bold; }
+    body { font-family: Tahoma, Arial, sans-serif; background: #0b1220; color: #f8fafc; margin: 0; padding: 16px; }
+    .top { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+    input { flex: 1; min-width: 180px; padding: 10px 12px; border-radius: 8px; border: 1px solid #334155; background: #1e293b; color: #fff; }
+    button { padding: 10px 16px; border-radius: 8px; border: 0; background: #2563eb; color: #fff; font-weight: bold; cursor: pointer; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 14px; }
+    .sym { font-size: 18px; font-weight: bold; margin-bottom: 8px; }
+    .row { display: flex; justify-content: space-between; margin: 4px 0; font-size: 14px; }
+    .up { color: #22c55e; font-weight: bold; }
+    .down { color: #ef4444; font-weight: bold; }
+    .err { background: #450a0a; border: 1px solid #dc2626; color: #fecaca; padding: 12px; border-radius: 8px; margin-bottom: 12px; white-space: pre-wrap; }
   </style>
 </head>
 <body>
-  <h2>فاحص عقود Bybit الآجلة (1m)</h2>
-  <form method="get">
-    <input name="symbols" value="{{ symbols_str }}" placeholder="BTCUSDT,ETHUSDT,SOLUSDT">
-    <button type="submit">فحص</button>
-  </form>
-  {% for r in results %}
-  <div class="card">
-    <div class="top">
-      <span class="sym">{{ r.symbol }}</span>
-      <span class="{{ r.css }}">{{ r.signal }}</span>
-    </div>
-    <div class="grid">
-      <div class="box">الدخول<br><b>{{ r.entry }}</b></div>
-      <div class="box">الوقف (SL)<br><b>{{ r.sl }}</b></div>
-      <div class="box">الهدف (TP 1:1.5)<br><b>{{ r.tp }}</b></div>
-    </div>
-    <div class="reason">{{ r.reason }}</div>
+  <h2>ماسح Bybit 1m</h2>
+  <div class="top">
+    <input id="symbolsInput" value="{{ default_symbols_str }}" placeholder="BTCUSDT, ETHUSDT, SOLUSDT">
+    <button onclick="runScan()">فحص</button>
   </div>
-  {% endfor %}
+  <div id="errorBox"></div>
+  <div id="results" class="grid"></div>
+
+  <script>
+    async function runScan() {
+      const errBox = document.getElementById("errorBox");
+      const resBox = document.getElementById("results");
+      const symbols = document.getElementById("symbolsInput").value.trim();
+      errBox.innerHTML = "";
+      resBox.innerHTML = "جاري الفحص...";
+
+      try {
+        const resp = await fetch("/api/scan?symbols=" + encodeURIComponent(symbols));
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+          errBox.innerHTML = '<div class="err">' + (data.error || "خطأ غير معروف") + '</div>';
+          resBox.innerHTML = "";
+          return;
+        }
+        resBox.innerHTML = data.items.map(item => {
+          if (item.error) {
+            return `<div class="card"><div class="sym">${item.symbol}</div><div class="down">${item.error}</div></div>`;
+          }
+          const cls = item.change_pct >= 0 ? "up" : "down";
+          return `
+            <div class="card">
+              <div class="sym">${item.symbol}</div>
+              <div class="row"><span>السعر:</span><span>${item.close}</span></div>
+              <div class="row"><span>التغير (1m):</span><span class="${cls}">${item.change_pct}%</span></div>
+              <div class="row"><span>الأعلى / الأدنى:</span><span>${item.high} / ${item.low}</span></div>
+              <div class="row"><span>الحجم:</span><span>${item.volume}</span></div>
+            </div>
+          `;
+        }).join("");
+      } catch (e) {
+        errBox.innerHTML = '<div class="err">فشل الاتصال بالخادم: ' + e.message + '</div>';
+        resBox.innerHTML = "";
+      }
+    }
+    runScan();
+  </script>
 </body>
 </html>
 """
 
-def fetch_klines(symbol: str, limit: int = 120):
-    url = f"{BYBIT_KLINE_URL}?category=linear&symbol={symbol}&interval=1&limit={limit}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    rows = data.get("result", {}).get("list", [])
-    rows.reverse()
-    candles = []
-    for row in rows:
-        candles.append({
-            "open": float(row[1]),
-            "high": float(row[2]),
-            "low": float(row[3]),
-            "close": float(row[4]),
-        })
-    return candles
-
-def ema(values, period: int):
-    if len(values) < period:
-        return []
-    k = 2.0 / (period + 1)
-    out = [sum(values[:period]) / period]
-    for v in values[period:]:
-        out.append(v * k + out[-1] * (1 - k))
-    return out
-
-def atr(candles, period: int = 10):
-    if len(candles) < period + 1:
-        return None
-    trs = []
-    for i in range(1, len(candles)):
-        h, l, pc = candles[i]["high"], candles[i]["low"], candles[i - 1]["close"]
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
-    val = sum(trs[:period]) / period
-    for tr in trs[period:]:
-        val = (val * (period - 1) + tr) / period
-    return val
-
-def supertrend(candles, period: int = 10, mult: float = 3.0):
-    if len(candles) < period + 2:
-        return None
-    trs = []
-    for i in range(1, len(candles)):
-        h, l, pc = candles[i]["high"], candles[i]["low"], candles[i - 1]["close"]
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
-    atr_series = []
-    cur = sum(trs[:period]) / period
-    atr_series.append(cur)
-    for tr in trs[period:]:
-        cur = (cur * (period - 1) + tr) / period
-        atr_series.append(cur)
-
-    start = period
-    final_up = []
-    final_dn = []
-    trend = []
-    for idx, c in enumerate(candles[start:]):
-        a = atr_series[idx]
-        hl2 = (c["high"] + c["low"]) / 2.0
-        basic_up = hl2 - mult * a
-        basic_dn = hl2 + mult * a
-        if idx == 0:
-            final_up.append(basic_up)
-            final_dn.append(basic_dn)
-            trend.append(1 if c["close"] >= basic_dn else -1)
-        else:
-            prev_close = candles[start + idx - 1]["close"]
-            up = basic_up if (basic_up > final_up[-1] or prev_close < final_up[-1]) else final_up[-1]
-            dn = basic_dn if (basic_dn < final_dn[-1] or prev_close > final_dn[-1]) else final_dn[-1]
-            final_up.append(up)
-            final_dn.append(dn)
-            if trend[-1] == -1 and c["close"] > final_dn[-1]:
-                trend.append(1)
-            elif trend[-1] == 1 and c["close"] < final_up[-1]:
-                trend.append(-1)
-            else:
-                trend.append(trend[-1])
-    return trend[-1]
-
-def fmt_price(p: float) -> str:
-    if p >= 100:
-        return f"{p:.2f}"
-    if p >= 1:
-        return f"{p:.4f}"
-    return f"{p:.6f}"
-
-def analyze_symbol(symbol: str):
-    try:
-        candles = fetch_klines(symbol)
-        closes = [c["close"] for c in candles]
-        ema20_list = ema(closes, 20)
-        st_dir = supertrend(candles, 10, 3.0)
-        cur_atr = atr(candles, 10)
-        if not ema20_list or st_dir is None or cur_atr is None:
-            return {"symbol": symbol, "signal": "انتظار", "css": "wait", "entry": "-", "sl": "-", "tp": "-", "reason": "بيانات غير كافية"}
-
-        last_c = candles[-1]
-        prev_c = candles[-2]
-        e20 = ema20_list[-1]
-        price = last_c["close"]
-        swing_low = min(c["low"] for c in candles[-5:-1])
-        swing_high = max(c["high"] for c in candles[-5:-1])
-
-        if st_dir == 1 and price > e20 and last_c["close"] > last_c["open"] and prev_c["close"] <= e20 * 1.003:
-            sl = min(swing_low, last_c["low"])
-            risk = price - sl
-            if risk > 0:
-                tp = price + risk * 1.5
-                return {
-                    "symbol": symbol,
-                    "signal": "شراء (Buy)",
-                    "css": "buy",
-                    "entry": fmt_price(price),
-                    "sl": fmt_price(sl),
-                    "tp": fmt_price(tp),
-                    "reason": "SuperTrend صاعد + السعر فوق EMA20 + شمعة صاعدة"
-                }
-
-        if st_dir == -1 and price < e20 and last_c["close"] < last_c["open"] and prev_c["close"] >= e20 * 0.997:
-            sl = max(swing_high, last_c["high"])
-            risk = sl - price
-            if risk > 0:
-                tp = price - risk * 1.5
-                return {
-                    "symbol": symbol,
-                    "signal": "بيع (Sell)",
-                    "css": "sell",
-                    "entry": fmt_price(price),
-                    "sl": fmt_price(sl),
-                    "tp": fmt_price(tp),
-                    "reason": "SuperTrend هابط + السعر تحت EMA20 + شمعة هابطة"
-                }
-
-        return {
-            "symbol": symbol,
-            "signal": "انتظار",
-            "css": "wait",
-            "entry": fmt_price(price),
-            "sl": "-",
-            "tp": "-",
-            "reason": "لم تكتمل شروط الدخول على فريم 1m"
+def fetch_kline_1m(symbol: str, limit: int = 5):
+    query = urllib.parse.urlencode({
+        "category": "linear",
+        "symbol": symbol.upper(),
+        "interval": "1",
+        "limit": limit
+    })
+    url = f"{BYBIT_KLINE_URL}?{query}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0"
         }
-    except Exception as exc:
-        return {"symbol": symbol, "signal": "انتظار", "css": "wait", "entry": "-", "sl": "-", "tp": "-", "reason": f"تعذر الجلب: {exc}"}
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        raw = resp.read().decode("utf-8")
+        payload = json.loads(raw)
+
+    if payload.get("retCode") != 0:
+        raise RuntimeError(f"Bybit retCode {payload.get('retCode')}: {payload.get('retMsg')}")
+
+    candles = payload.get("result", {}).get("list", [])
+    if not candles:
+        raise RuntimeError("لا توجد بيانات شموع")
+
+    latest = candles[0]
+    open_p = float(latest[1])
+    high_p = float(latest[2])
+    low_p = float(latest[3])
+    close_p = float(latest[4])
+    vol = float(latest[5])
+    change_pct = round(((close_p - open_p) / open_p) * 100, 3) if open_p else 0.0
+
+    return {
+        "symbol": symbol.upper(),
+        "open": open_p,
+        "high": high_p,
+        "low": low_p,
+        "close": close_p,
+        "volume": vol,
+        "change_pct": change_pct,
+        "ts": int(time.time())
+    }
 
 @app.route("/")
 def index():
-    raw = request.args.get("symbols", ",".join(DEFAULT_SYMBOLS))
-    syms = [s.strip().upper() for s in raw.split(",") if s.strip()][:10]
-    if not syms:
-        syms = DEFAULT_SYMBOLS
-    results = [analyze_symbol(s) for s in syms]
-    return render_template_string(HTML_PAGE, results=results, symbols_str=",".join(syms))
+    return render_template_string(HTML_PAGE, default_symbols_str=", ".join(DEFAULT_SYMBOLS))
+
+@app.route("/api/scan")
+def api_scan():
+    raw_symbols = request.args.get("symbols", "")
+    symbols = [s.strip().upper() for s in raw_symbols.split(",") if s.strip()] or DEFAULT_SYMBOLS
+    items = []
+    for sym in symbols:
+        try:
+            items.append(fetch_kline_1m(sym))
+        except Exception as exc:
+            items.append({"symbol": sym, "error": str(exc)})
+    return jsonify({"items": items})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
